@@ -59,24 +59,26 @@ type Manager struct {
 	proxyBuilder     ProxyBuilder
 	serviceBuilders  []ServiceBuilder
 
-	services       map[string]http.Handler
-	configs        map[string]*runtime.ServiceInfo
-	healthCheckers map[string]*healthcheck.ServiceHealthChecker
-	rand           *rand.Rand // For the initial shuffling of load-balancers.
+	services             map[string]http.Handler
+	configs              map[string]*runtime.ServiceInfo
+	healthCheckers       map[string]*healthcheck.ServiceHealthChecker
+	nativeHealthUpdaters map[string]*HealthUpdater
+	rand                 *rand.Rand // For the initial shuffling of load-balancers.
 }
 
 // NewManager creates a new Manager.
 func NewManager(configs map[string]*runtime.ServiceInfo, observabilityMgr *middleware.ObservabilityMgr, routinePool *safe.Pool, transportManager httputil.TransportManager, proxyBuilder ProxyBuilder, serviceBuilders ...ServiceBuilder) *Manager {
 	return &Manager{
-		routinePool:      routinePool,
-		observabilityMgr: observabilityMgr,
-		transportManager: transportManager,
-		proxyBuilder:     proxyBuilder,
-		serviceBuilders:  serviceBuilders,
-		services:         make(map[string]http.Handler),
-		configs:          configs,
-		healthCheckers:   make(map[string]*healthcheck.ServiceHealthChecker),
-		rand:             rand.New(rand.NewSource(time.Now().UnixNano())),
+		routinePool:          routinePool,
+		observabilityMgr:     observabilityMgr,
+		transportManager:     transportManager,
+		proxyBuilder:         proxyBuilder,
+		serviceBuilders:      serviceBuilders,
+		services:             make(map[string]http.Handler),
+		configs:              configs,
+		healthCheckers:       make(map[string]*healthcheck.ServiceHealthChecker),
+		nativeHealthUpdaters: make(map[string]*HealthUpdater),
+		rand:                 rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -251,7 +253,7 @@ func (m *Manager) getWRRServiceHandler(ctx context.Context, serviceName string, 
 		config.Sticky.Cookie.Name = cookie.GetName(config.Sticky.Cookie.Name, serviceName)
 	}
 
-	balancer := wrr.New(config.Sticky, config.HealthCheck != nil)
+	balancer := wrr.New(config.Sticky, config.HealthCheck != nil, false)
 	for _, service := range shuffle(config.Services, m.rand) {
 		serviceHandler, err := m.getServiceHandler(ctx, service)
 		if err != nil {
@@ -337,14 +339,16 @@ func (m *Manager) getLoadBalancerServiceHandler(ctx context.Context, serviceName
 		passHostHeader = *service.PassHostHeader
 	}
 
-	lb := wrr.New(service.Sticky, service.HealthCheck != nil)
+	lb := wrr.New(service.Sticky, service.HealthCheck != nil, service.UsesNativeHealthCheck())
 	healthCheckTargets := make(map[string]*url.URL)
+	servers := make(map[string]*dynamic.Server)
 
 	for _, server := range shuffle(service.Servers, m.rand) {
 		hasher := fnv.New64a()
 		_, _ = hasher.Write([]byte(server.URL)) // this will never return an error.
 
 		proxyName := hex.EncodeToString(hasher.Sum(nil))
+		servers[proxyName] = &server
 
 		target, err := url.Parse(server.URL)
 		if err != nil {
@@ -404,7 +408,9 @@ func (m *Manager) getLoadBalancerServiceHandler(ctx context.Context, serviceName
 
 		healthCheckTargets[proxyName] = target
 	}
-
+	if service.UsesNativeHealthCheck() {
+		m.nativeHealthUpdaters[serviceName] = NewHealthUpdater(lb, info, servers, serviceName)
+	}
 	if service.HealthCheck != nil {
 		roundTripper, err := m.transportManager.GetRoundTripper(service.ServersTransport)
 		if err != nil {
@@ -424,6 +430,63 @@ func (m *Manager) getLoadBalancerServiceHandler(ctx context.Context, serviceName
 	}
 
 	return lb, nil
+}
+
+// JJ: refactor and move away from here
+type HealthUpdater struct {
+	balancer healthcheck.StatusSetter
+	info     *runtime.ServiceInfo
+
+	servers     map[string]*dynamic.Server
+	serviceName string
+}
+
+func NewHealthUpdater(balancer healthcheck.StatusSetter, info *runtime.ServiceInfo, servers map[string]*dynamic.Server, serviceName string) *HealthUpdater {
+	return &HealthUpdater{
+		balancer:    balancer,
+		info:        info,
+		servers:     servers,
+		serviceName: serviceName,
+	}
+}
+
+func (hu *HealthUpdater) Launch(ctx context.Context) {
+	// JJ: needs a channel to get updates about status
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+
+		case <-ticker.C:
+			for name, server := range hu.servers {
+				select {
+				case <-ctx.Done():
+					hu.balancer.SetStatus(ctx, name, false)
+					hu.info.UpdateServerStatus(server.URL, runtime.StatusDown)
+					return
+
+				default:
+					up := *server.Ready
+					statusStr := runtime.StatusDown
+					if up {
+						statusStr = runtime.StatusUp
+					}
+					hu.balancer.SetStatus(ctx, name, up)
+					hu.info.UpdateServerStatus(server.URL, statusStr)
+				}
+
+			}
+		}
+	}
+}
+
+func (m *Manager) LaunchNativeHealthUpdates(ctx context.Context) {
+	for serviceName, hu := range m.nativeHealthUpdaters {
+		logger := log.Ctx(ctx).With().Str(logs.ServiceName, serviceName).Logger()
+		go hu.Launch(logger.WithContext(ctx))
+	}
 }
 
 // LaunchHealthCheck launches the health checks.

@@ -224,6 +224,16 @@ func (l *ServersLoadBalancer) Mergeable(loadBalancer *ServersLoadBalancer) bool 
 	return reflect.DeepEqual(l, loadBalancer)
 }
 
+// UsesNativeHealthCheck tells whether this load balancer's servers have health information made available by an external mechanism (e.g. Kubernetes).
+func (l *ServersLoadBalancer) UsesNativeHealthCheck() bool {
+	for _, server := range l.Servers {
+		if server.Ready == nil {
+			return false
+		}
+	}
+	return true
+}
+
 // SetDefaults Default values for a ServersLoadBalancer.
 func (l *ServersLoadBalancer) SetDefaults() {
 	defaultPassHostHeader := DefaultPassHostHeader
@@ -259,6 +269,7 @@ type Server struct {
 	PreservePath bool   `json:"preservePath,omitempty" toml:"preservePath,omitempty" yaml:"preservePath,omitempty" label:"-" export:"true"`
 	Scheme       string `json:"-" toml:"-" yaml:"-" file:"-"`
 	Port         string `json:"-" toml:"-" yaml:"-" file:"-"`
+	Ready        *bool  `json:"-" toml:"-" yaml:"-" file:"-"`
 }
 
 // SetDefaults Default values for a Server.

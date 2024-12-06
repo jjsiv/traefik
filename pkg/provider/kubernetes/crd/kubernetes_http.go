@@ -318,7 +318,7 @@ func (c configBuilder) buildMirroring(ctx context.Context, tService *traefikv1al
 	return nil
 }
 
-// buildFailover creates the configuration for the failvoer service named id, and defined by tService.
+// buildFailover creates the configuration for the failover service named id, and defined by tService.
 // It adds it to the given conf map.
 func (c configBuilder) buildFailover(ctx context.Context, tService *traefikv1alpha1.TraefikService, id string, conf map[string]*dynamic.Service) error {
 	fullNameMain, k8sService, err := c.nameAndService(ctx, tService.Namespace, tService.Spec.Failover.MainService)
@@ -576,18 +576,17 @@ func (c configBuilder) loadServers(parentNamespace string, svc traefikv1alpha1.L
 		}
 
 		for _, endpoint := range endpointSlice.Endpoints {
-			if endpoint.Conditions.Ready == nil || !*endpoint.Conditions.Ready {
-				continue
-			}
-
 			for _, address := range endpoint.Addresses {
 				if _, ok := addresses[address]; ok {
 					continue
 				}
 
+				ready := endpoint.Conditions.Ready != nil && *endpoint.Conditions.Ready
+				fmt.Printf("creating server: %s\n", address)
 				addresses[address] = struct{}{}
 				servers = append(servers, dynamic.Server{
-					URL: fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(address, strconv.Itoa(int(port)))),
+					URL:   fmt.Sprintf("%s://%s", protocol, net.JoinHostPort(address, strconv.Itoa(int(port)))),
+					Ready: &ready,
 				})
 			}
 		}

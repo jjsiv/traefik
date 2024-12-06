@@ -50,6 +50,8 @@ func convertSameSite(sameSite string) http.SameSite {
 type Balancer struct {
 	stickyCookie     *stickyCookie
 	wantsHealthCheck bool
+	// nativeHealthCheck specifies whether this Balancer has health status made available by an external mechanism.
+	nativeHealthCheck bool
 
 	handlersMu sync.RWMutex
 	// References all the handlers by name and also by the hashed value of the name.
@@ -67,11 +69,12 @@ type Balancer struct {
 }
 
 // New creates a new load balancer.
-func New(sticky *dynamic.Sticky, wantHealthCheck bool) *Balancer {
+func New(sticky *dynamic.Sticky, wantHealthCheck bool, usesNativeHealthCheck bool) *Balancer {
 	balancer := &Balancer{
-		status:           make(map[string]struct{}),
-		handlerMap:       make(map[string]*namedHandler),
-		wantsHealthCheck: wantHealthCheck,
+		status:            make(map[string]struct{}),
+		handlerMap:        make(map[string]*namedHandler),
+		wantsHealthCheck:  wantHealthCheck,
+		nativeHealthCheck: usesNativeHealthCheck,
 	}
 	if sticky != nil && sticky.Cookie != nil {
 		balancer.stickyCookie = &stickyCookie{
@@ -166,8 +169,8 @@ func (b *Balancer) SetStatus(ctx context.Context, childName string, up bool) {
 // status of the Balancer changes.
 // Not thread safe.
 func (b *Balancer) RegisterStatusUpdater(fn func(up bool)) error {
-	if !b.wantsHealthCheck {
-		return errors.New("healthCheck not enabled in config for this weighted service")
+	if !b.wantsHealthCheck && !b.nativeHealthCheck {
+		return errors.New("neither healthCheck enabled in config nor native health status available for this weighted service")
 	}
 	b.updaters = append(b.updaters, fn)
 	return nil

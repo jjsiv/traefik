@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	r "runtime/debug"
 	"sync"
 
 	"github.com/rs/zerolog/log"
@@ -78,6 +79,8 @@ func (m *Mirroring) getActiveMirrors() []http.Handler {
 }
 
 func (m *Mirroring) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
+	fmt.Println("mirror servehttp")
+	r.PrintStack()
 	mirrors := m.getActiveMirrors()
 	if len(mirrors) == 0 {
 		m.handler.ServeHTTP(rw, req)
@@ -149,6 +152,7 @@ func (m *Mirroring) RegisterStatusUpdater(fn func(up bool)) error {
 	// skip that below, and even not add HealthCheck as a field of
 	// dynamic.Mirroring. But I think it's easier to understand for the user
 	// if the HealthCheck is required absolutely everywhere in the config.
+	fmt.Println("Am here mirror")
 	if !m.wantsHealthCheck {
 		return errors.New("healthCheck not enabled in config for this mirroring service")
 	}

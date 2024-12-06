@@ -99,6 +99,7 @@ func (f *RouterFactory) CreateRouters(rtConf *runtime.Configuration) (map[string
 	handlersTLS := routerManager.BuildHandlers(ctx, f.entryPointsTCP, true)
 
 	serviceManager.LaunchHealthCheck(ctx)
+	serviceManager.LaunchNativeHealthUpdates(ctx)
 
 	// TCP
 	svcTCPManager := tcpsvc.NewManager(rtConf, f.dialerManager)

@@ -3,6 +3,7 @@ package failover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sync"
 
@@ -51,6 +52,7 @@ func (f *Failover) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	f.handlerStatusMu.RLock()
 	handlerStatus := f.handlerStatus
 	f.handlerStatusMu.RUnlock()
+	fmt.Printf("handler status is: %t", handlerStatus)
 
 	if handlerStatus {
 		f.handler.ServeHTTP(w, req)
